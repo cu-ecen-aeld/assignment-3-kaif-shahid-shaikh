@@ -1,5 +1,12 @@
 #include "systemcalls.h"
-
+#include <stdlib.h>     // system
+#include <stdbool.h>
+#include <stdarg.h>     // va_list, va_start, va_end
+#include <sys/types.h>  // pid_t
+#include <sys/wait.h>   // waitpid, WIFEXITED, WEXITSTATUS
+#include <unistd.h>     // fork, execv, _exit, dup2, close, STDOUT_FILENO
+#include <fcntl.h>      // open, O_*
+#include <stdio.h>      // fflush
 /**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
@@ -9,15 +16,17 @@
 */
 bool do_system(const char *cmd)
 {
+ if (cmd == NULL) return false;
 
+    int rc = system(cmd);
+    if (rc == -1) return false;
+
+    return WIFEXITED(rc) && (WEXITSTATUS(rc) == 0);
 /*
- * TODO  add your code here
  *  Call the system() function with the command set in the cmd
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
-    return true;
 }
 
 /**
@@ -45,9 +54,29 @@ bool do_exec(int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
+
+    fflush(stdout); // avoid duplicate prints after fork
+    pid_t pid = fork();
+    if (pid < 0) {
+        va_end(args);
+        return false;   // fork failed
+    }
+
+    if (pid == 0) {
+        // child process
+        execv(command[0], command);
+        _exit(1);       // only reached if execv fails
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) == -1) {
+        va_end(args);
+        return false;   // waitpid failed
+    }
+
+    va_end(args);
+    return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
+
 
 /*
  * TODO:
@@ -59,16 +88,8 @@ bool do_exec(int count, ...)
  *
 */
 
-    va_end(args);
-
-    return true;
 }
 
-/**
-* @param outputfile - The full path to the file to write with command output.
-*   This file will be closed at completion of the function call.
-* All other parameters, see do_exec above
-*/
 bool do_exec_redirect(const char *outputfile, int count, ...)
 {
     va_list args;
@@ -80,9 +101,35 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) {
+        va_end(args);
+        return false;   // fork failed
+    }
+
+    if (pid == 0) {
+        // child process
+        int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) _exit(1);
+        if (dup2(fd, STDOUT_FILENO) < 0) {
+            close(fd);
+            _exit(1);
+        }
+        close(fd);
+
+        execv(command[0], command);
+        _exit(1);   // only reached if execv fails
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) == -1) {
+        va_end(args);
+        return false;
+    }
+
+    va_end(args);
+    return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
 
 
 /*
@@ -92,8 +139,4 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
-
-    va_end(args);
-
-    return true;
 }
