@@ -1,7 +1,7 @@
 # finder-app/Makefile
 
-# If CROSS_COMPILE is set (e.g., aarch64-linux-gnu-), it will prefix gcc
-CC      := $(CROSS_COMPILE)gcc
+# CC will be provided by Buildroot (e.g., aarch64-buildroot-linux-gnu-gcc)
+CC      ?= gcc
 CFLAGS  ?= -Wall -Wextra -Werror -std=c11 -g
 LDFLAGS ?=
 
