@@ -1,3 +1,12 @@
+/*
+ * CREDITS (helped by ChatGPT in error handling and automicity of append_packet()):
+ * 1) (L28, L104–110) SIGPIPE unhandled → send() may terminate server.
+ * 2) (L208–212) Only first '\n' processed; extra data in same recv() is dropped.
+ * 3) (L163) No recv timeout → vulnerable to slowloris clients.
+ * 4) (L171–175) Unbounded realloc growth → potential memory blow-up.
+ * 5) (L176–185) realloc() failure path drops data; should log & close connection.
+ */
+
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
