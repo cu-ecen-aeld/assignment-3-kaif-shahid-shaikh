@@ -2,6 +2,9 @@ CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Wextra -Werror -O2
 LDFLAGS ?=
 
+CFLAGS  += -pthread
+LDFLAGS += -pthread
+
 TARGET := aesdsocket
 
 all: $(TARGET)
