@@ -1,3 +1,4 @@
+// Credits to ChatGPT for pointing out my mutex mistake around append packet and send file
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -123,23 +124,30 @@ static void *handle_client(void *arg) {
         len += (size_t)n;
     }
 
-    if (pkt && len) {
-        size_t upto=0;
-        while (upto < len && pkt[upto] != '\n') upto++;
-        if (upto < len && pkt[upto] == '\n') upto++;
+if (pkt && len) {
+    size_t start = 0;
+    while (start < len) {
+        size_t i = start;
+        while (i < len && pkt[i] != '\n') i++;
 
-        pthread_mutex_lock(&file_mutex);
-        append_packet(DATAFILE, pkt, upto);
-        pthread_mutex_unlock(&file_mutex);
-
-        pthread_mutex_lock(&file_mutex);
-        send_file(client_fd, DATAFILE);
-        pthread_mutex_unlock(&file_mutex);
+        if (i < len && pkt[i] == '\n') {
+            size_t linelen = (i + 1) - start;  // include '\n'
+            pthread_mutex_lock(&file_mutex);
+            append_packet(DATAFILE, pkt + start, linelen);
+            pthread_mutex_unlock(&file_mutex);
+            start = i + 1;  // next line
+        } else {
+            // partial (no trailing '\n'): keep for future recv if you support multi-line clients
+            break;
+        }
     }
 
+    pthread_mutex_lock(&file_mutex);
+    send_file(client_fd, DATAFILE);
+    pthread_mutex_unlock(&file_mutex);
+}
+
     free(pkt);
-    shutdown(client_fd, SHUT_RDWR);
-    close(client_fd);
     return NULL;
 }
 
@@ -232,7 +240,7 @@ int main(int argc, char **argv) {
     if (opt_daemon) daemonize();
 
     {
-        int fd = open(DATAFILE, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0664);
+        int fd = open(DATAFILE, O_WRONLY | O_CREAT | O_TRUNC, 0664);
         if (fd < 0) {
             syslog(LOG_ERR, "Failed to open %s at startup: %s", DATAFILE, strerror(errno));
         } else {
