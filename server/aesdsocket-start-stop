@@ -1,18 +1,41 @@
 #!/bin/sh
 
+# Be explicit about where the module & scripts were installed by Buildroot
+MODDIR="/lib/modules/$(uname -r)/extra"
+
 case "$1" in
   start)
-    echo "Starting aesdsocket"
+    echo "[S99aesdsocket] Loading aesdchar driver..."
+    # enter the directory so aesdchar_load's relative insmod works
+    if cd "$MODDIR"; then
+        ./aesdchar_load || {
+            echo "[S99aesdsocket] ERROR: aesdchar_load failed"; exit 1;
+        }
+    else
+        echo "[S99aesdsocket] ERROR: cannot cd to $MODDIR"; exit 1
+    fi
+
+    echo "[S99aesdsocket] Starting aesdsocket (daemon)..."
     start-stop-daemon -S -n aesdsocket -a /usr/bin/aesdsocket -- -d
     ;;
   stop)
-    echo "Stopping aesdsocket"
+    echo "[S99aesdsocket] Stopping aesdsocket..."
     start-stop-daemon -K -n aesdsocket --signal TERM
+
+    echo "[S99aesdsocket] Unloading aesdchar driver..."
+    if cd "$MODDIR"; then
+        ./aesdchar_unload || {
+            echo "[S99aesdsocket] WARN: aesdchar_unload failed (ignoring)"
+        }
+    else
+        echo "[S99aesdsocket] WARN: cannot cd to $MODDIR to unload driver"
+    fi
     ;;
   *)
-    echo "Usage: $0 {start|stop|restart|status}"
+    echo "Usage: $0 {start|stop}"
     exit 1
     ;;
 esac
 
 exit 0
+
