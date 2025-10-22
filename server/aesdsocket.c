@@ -1,4 +1,4 @@
-// Credits to ChatGPT for pointing out my mutex mistake around append packet and send file
+// Credits to ChatGPT for pointing out my mutex mistake around append packet and send file also to wrap around append packet correctly
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -17,8 +17,15 @@
 #include <sys/queue.h>
 #include <time.h>
 
-#define PORT 9000
+#define USE_AESD_CHAR_DEVICE 1
+
+#if USE_AESD_CHAR_DEVICE
+#define DATAFILE "/dev/aesdchar"
+#else
 #define DATAFILE "/var/tmp/aesdsocketdata"
+#endif
+
+#define PORT 9000
 #define BACKLOG 10
 #define RECV_CHUNK 1024
 
@@ -80,8 +87,13 @@ static int send_file(int sockfd, const char *path) {
 }
 
 static int append_packet(const char *path, const char *data, size_t len) {
+#if USE_AESD_CHAR_DEVICE
+    int fd = open(path, O_WRONLY);              // device: no O_CREAT/O_APPEND
+#else
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+#endif
     if (fd < 0) return -1;
+
     const char *p = data;
     while (len) {
         ssize_t n = write(fd, p, len);
@@ -151,6 +163,7 @@ if (pkt && len) {
     return NULL;
 }
 
+#if !USE_AESD_CHAR_DEVICE
 static void *timestamp_thread(void *arg) {
     (void)arg;
     while (!g_exit) {
@@ -167,6 +180,7 @@ static void *timestamp_thread(void *arg) {
     }
     return NULL;
 }
+#endif
 
 static void daemonize(void) {
     pid_t pid = fork();
@@ -238,7 +252,7 @@ int main(int argc, char **argv) {
     }
 
     if (opt_daemon) daemonize();
-
+    #if !USE_AESD_CHAR_DEVICE
     {
         int fd = open(DATAFILE, O_WRONLY | O_CREAT | O_TRUNC, 0664);
         if (fd < 0) {
@@ -247,9 +261,12 @@ int main(int argc, char **argv) {
             close(fd);
         }
     }
-
+    #endif
+    
+    #if !USE_AESD_CHAR_DEVICE
     pthread_t ts_tid;
     pthread_create(&ts_tid, NULL, timestamp_thread, NULL);
+    #endif
 
     while (!g_exit) {
         struct sockaddr_in cli;
@@ -294,7 +311,9 @@ int main(int argc, char **argv) {
     }
 
     // join timestamp thread
+    #if !USE_AESD_CHAR_DEVICE
     pthread_join(ts_tid, NULL);
+    #endif
 
     // join all client threads
     struct thread_node *np;
