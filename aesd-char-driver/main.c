@@ -20,6 +20,7 @@
 #include <linux/slab.h>  
 #include <linux/string.h> 
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
 #include <linux/uaccess.h> 
 #include <linux/minmax.h>  
 
@@ -31,6 +32,106 @@ MODULE_AUTHOR("Kaif Shaikh"); /** TODO: fill in your name **/
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
+
+static loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
+    struct aesd_dev *dev = filp->private_data;
+    loff_t newpos;
+    size_t total_size = 0;
+
+    if (!dev) return -EINVAL;
+    if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+
+    /* compute number of valid entries */
+    int count;
+    if (dev->circ.full) count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    else if (dev->circ.in_offs == dev->circ.out_offs) count = 0;
+    else if (dev->circ.in_offs > dev->circ.out_offs)
+        count = dev->circ.in_offs - dev->circ.out_offs;
+    else
+        count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - dev->circ.out_offs + dev->circ.in_offs;
+
+    uint8_t idx = dev->circ.out_offs;
+    for (int i = 0; i < count; i++) {
+        total_size += dev->circ.entry[idx].size;
+        idx = (idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+
+    switch (whence) {
+    case SEEK_SET: newpos = off; break;
+    case SEEK_CUR: newpos = filp->f_pos + off; break;
+    case SEEK_END: newpos = (loff_t)total_size + off; break;
+    default:
+        mutex_unlock(&dev->lock);
+        return -EINVAL;
+    }
+
+    if (newpos < 0) newpos = 0;
+    if (newpos > (loff_t)total_size) newpos = (loff_t)total_size;
+
+    filp->f_pos = newpos;
+    mutex_unlock(&dev->lock);
+    return newpos;
+}
+
+static long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_seekto seekto;
+
+    if (!dev) return -EINVAL;
+
+    switch (cmd) {
+    case AESDCHAR_IOCSEEKTO:
+        if (copy_from_user(&seekto, (const void __user *)arg, sizeof(seekto)))
+            return -EFAULT;
+
+        if (mutex_lock_interruptible(&dev->lock)) return -ERESTARTSYS;
+
+        /* how many valid entries exist right now? */
+        {
+            int count;
+            if (dev->circ.full) count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            else if (dev->circ.in_offs == dev->circ.out_offs) count = 0;
+            else if (dev->circ.in_offs > dev->circ.out_offs)
+                count = dev->circ.in_offs - dev->circ.out_offs;
+            else
+                count = AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED - dev->circ.out_offs + dev->circ.in_offs;
+
+            /* validate write_cmd against current count */
+            if ((int)seekto.write_cmd >= count) {
+                mutex_unlock(&dev->lock);
+                return -EINVAL;
+            }
+
+            /* translate logical command index to ring index starting at out_offs */
+            uint8_t idx = (dev->circ.out_offs + seekto.write_cmd) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+
+            /* validate offset within that command */
+            if (seekto.write_cmd_offset >= dev->circ.entry[idx].size) {
+                mutex_unlock(&dev->lock);
+                return -EINVAL;
+            }
+
+            /* compute absolute byte position: sum sizes of prior commands, then add offset */
+            loff_t pos = 0;
+            uint8_t walk = dev->circ.out_offs;
+            for (uint32_t i = 0; i < seekto.write_cmd; i++) {
+                pos += dev->circ.entry[walk].size;
+                walk = (walk + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            }
+            pos += seekto.write_cmd_offset;
+
+            filp->f_pos = pos;
+        }
+
+        mutex_unlock(&dev->lock);
+        return 0;
+
+    default:
+        return -ENOTTY;
+    }
+}
 
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -170,11 +271,13 @@ out_unlock:
 }
 
 struct file_operations aesd_fops = {
-    .owner =    THIS_MODULE,
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
+   .owner          = THIS_MODULE,
+    .read           = aesd_read,
+    .write          = aesd_write,
+    .open           = aesd_open,
+    .release        = aesd_release,
+    .llseek         = aesd_llseek,          
+    .unlocked_ioctl = aesd_unlocked_ioctl, 
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
