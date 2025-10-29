@@ -5,6 +5,8 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,25 +140,59 @@ static void *handle_client(void *arg) {
 
 if (pkt && len) {
     size_t start = 0;
+    int did_seek_io = 0;
     while (start < len) {
         size_t i = start;
         while (i < len && pkt[i] != '\n') i++;
 
         if (i < len && pkt[i] == '\n') {
             size_t linelen = (i + 1) - start;  // include '\n'
-            pthread_mutex_lock(&file_mutex);
-            append_packet(DATAFILE, pkt + start, linelen);
-            pthread_mutex_unlock(&file_mutex);
-            start = i + 1;  // next line
+#if USE_AESD_CHAR_DEVICE
+if (linelen >= 18 && strncmp(pkt + start, "AESDCHAR_IOCSEEKTO", 18) == 0) {
+unsigned X = 0, Y = 0;
+    int parsed = sscanf(pkt + start, "AESDCHAR_IOCSEEKTO:%u,%u", &X, &Y);
+    if (parsed == 2) {
+        struct aesd_seekto st = { .write_cmd = X, .write_cmd_offset = Y };
+
+        pthread_mutex_lock(&file_mutex);                  // like your friend: serialize device ops
+        int fd = open(DATAFILE, O_RDWR);
+        if (fd >= 0) {
+            if (ioctl(fd, AESDCHAR_IOCSEEKTO, &st) != -1) {
+                char rbuf[RECV_CHUNK];
+                ssize_t rn;
+                while ((rn = read(fd, rbuf, sizeof rbuf)) > 0) {
+                    if (send_all(client_fd, rbuf, (size_t)rn) < 0) break;
+                    /* keep reading until read() returns 0 (EOF) */
+                }
+                did_seek_io = 1;
+            }
+            close(fd);
+        }
+        pthread_mutex_unlock(&file_mutex);
+
+        start = i + 1;       // handled this line
+        continue;            // DO NOT fall through to append
+    }
+}
+#endif
+
+{
+    pthread_mutex_lock(&file_mutex);
+    append_packet(DATAFILE, pkt + start, linelen);
+    pthread_mutex_unlock(&file_mutex);
+}
+start = i + 1;  // next line
         } else {
             // partial (no trailing '\n'): keep for future recv if you support multi-line clients
             break;
         }
     }
 
+if (!did_seek_io) {
     pthread_mutex_lock(&file_mutex);
     send_file(client_fd, DATAFILE);
     pthread_mutex_unlock(&file_mutex);
+}
 }
 
     free(pkt);
